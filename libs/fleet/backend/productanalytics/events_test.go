@@ -187,6 +187,57 @@ func TestValidateEventRejectsUnsafeProperties(t *testing.T) {
 	}
 }
 
+func TestQualificationLookupDiagnosticsRequireBoundedPairedValues(t *testing.T) {
+	valid := func() Event {
+		return Event{Name: EventQualificationRejected, DistinctID: "synthetic-subject", Properties: map[string]any{
+			"reason": "binding_lookup_failed", "qualification_lookup_stage": "claim", "qualification_error_class": "deadline_exceeded",
+		}}
+	}
+	for stage := range allowedQualificationLookupStages {
+		for class := range allowedQualificationErrorClasses {
+			event := valid()
+			event.Properties["qualification_lookup_stage"] = stage
+			event.Properties["qualification_error_class"] = class
+			if stage == "pool" {
+				event.Properties["reason"] = "pool_lookup_failed"
+			}
+			if err := ValidateEvent(event); err != nil {
+				t.Fatalf("bounded pair %s/%s rejected: %v", stage, class, err)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Event)
+	}{
+		{"raw error", func(e *Event) { e.Properties["qualification_error_class"] = "https://private.example.test/secret" }},
+		{"raw stage", func(e *Event) { e.Properties["qualification_lookup_stage"] = "person@example.test" }},
+		{"non-string", func(e *Event) { e.Properties["qualification_error_class"] = 403 }},
+		{"missing class", func(e *Event) { delete(e.Properties, "qualification_error_class") }},
+		{"missing stage", func(e *Event) { delete(e.Properties, "qualification_lookup_stage") }},
+		{"empty class", func(e *Event) { e.Properties["qualification_error_class"] = "" }},
+		{"wrong event", func(e *Event) { e.Name = EventQualifyingWorkload }},
+		{"wrong reason", func(e *Event) { e.Properties["reason"] = "claim_mismatch" }},
+		{"pool stage binding reason", func(e *Event) { e.Properties["qualification_lookup_stage"] = "pool" }},
+		{"binding stage pool reason", func(e *Event) { e.Properties["reason"] = "pool_lookup_failed" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := valid()
+			tc.mutate(&event)
+			if err := ValidateEvent(event); err == nil {
+				t.Fatal("invalid lookup diagnostic was accepted")
+			}
+		})
+	}
+	// Existing events without these optional diagnostics remain valid.
+	event := valid()
+	delete(event.Properties, "qualification_lookup_stage")
+	delete(event.Properties, "qualification_error_class")
+	if err := ValidateEvent(event); err != nil {
+		t.Fatalf("legacy rejection invalid: %v", err)
+	}
+}
+
 func TestValidatePaymentFunnelEvents(t *testing.T) {
 	setupStart := Event{
 		Name: EventPaymentSetupStart, DistinctID: "subject-1",

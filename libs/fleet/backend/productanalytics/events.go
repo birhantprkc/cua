@@ -112,6 +112,15 @@ var allowedProperties = map[string]struct{}{
 	"error_class": {}, "environment": {}, "instrumentation_version": {},
 	"identity_class": {},
 	"resource_type":  {}, "reason": {},
+	"qualification_lookup_stage": {}, "qualification_error_class": {},
+}
+
+var allowedQualificationLookupStages = map[string]struct{}{"sandbox": {}, "claim": {}, "pool": {}, "unknown": {}}
+var allowedQualificationErrorClasses = map[string]struct{}{
+	"deadline_exceeded": {}, "canceled": {}, "timeout": {}, "unauthenticated": {}, "forbidden": {},
+	"not_found": {}, "rate_limited": {}, "upstream_5xx": {}, "unexpected_status": {},
+	"invalid_response": {}, "invalid_binding": {}, "missing_identity": {}, "invalid_request": {},
+	"request_failed": {}, "unknown": {},
 }
 
 var allowedResourceTypes = map[string]struct{}{"pool": {}, "template": {}, "claim": {}}
@@ -237,6 +246,23 @@ func ValidateEvent(event Event) error {
 	}
 	if event.Name == EventQualificationRejected && !hasReason {
 		return fmt.Errorf("qualification rejection event requires reason")
+	}
+	stage, hasStage := event.Properties["qualification_lookup_stage"]
+	class, hasClass := event.Properties["qualification_error_class"]
+	if hasStage || hasClass {
+		stageValue, stageOK := stage.(string)
+		classValue, classOK := class.(string)
+		_, stageAllowed := allowedQualificationLookupStages[stageValue]
+		_, classAllowed := allowedQualificationErrorClasses[classValue]
+		if !stageOK || !classOK || !stageAllowed || !classAllowed {
+			return fmt.Errorf("qualification lookup diagnostics require bounded stage and error class")
+		}
+		if event.Name != EventQualificationRejected || (reason != "binding_lookup_failed" && reason != "pool_lookup_failed") {
+			return fmt.Errorf("qualification lookup diagnostics require lookup rejection")
+		}
+		if (reason == "pool_lookup_failed") != (stageValue == "pool") {
+			return fmt.Errorf("qualification lookup stage must match rejection reason")
+		}
 	}
 	return nil
 }
